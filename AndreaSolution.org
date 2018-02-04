@@ -1,0 +1,1331 @@
+* DONE [#A] create a favourite image list
+CLOSED: [2018-02-04 Sun 16:26] SCHEDULED: <2018-02-03 Sat>
+:PROPERTIES:
+:CREATED:  [2018-02-01 Thu 23:38]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-04 Sun 16:26]
+:END:
+
+
+#+BEGIN_QUOTE
+The user should be able to enter a URL to an image and a description
+of why they like it, and then click a button to add it to their list
+of images. The list should show each image with their description.
+#+END_QUOTE
+
+Only Om:
+#+BEGIN_QUOTE
+Note that this can all happen inside ClojureScript/the browser, meaning
+everything can disappear when you refresh, nothing needs to be saved serverside.
+#+END_QUOTE
+
+No CSS, but use Bootstrap:
+
+#+BEGIN_QUOTE
+This assignment uses Bootstrap 4 for styling. You shouldn't bother with any
+custom CSS, but try to use Bootstrap classes to make things look presentable.
+Look at Bootstrap's documentation to find the right HTML markup and CSS classes
+to use (see for example the section on Forms
+https://getbootstrap.com/docs/4.0/components/forms/).
+#+END_QUOTE
+
+Make quality code:
+
+#+BEGIN_QUOTE
+In general, the goal is not so much about solving an algorithmic puzzle, but
+more for us to get an impression of how you would build production-quality
+stuff. So try to pay the same attention to your code/functionality/presentation
+as you would in the real world.
+#+END_QUOTE
+** DONE some experiments
+CLOSED: [2018-02-03 Sat 19:05]
+:PROPERTIES:
+:CREATED:  [2018-02-03 Sat 19:04]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-03 Sat 19:05]
+:END:
+After some experiments to familiarize with the libraries I got here:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           [:label "Image URL"]
+           [:input {:type "text"
+                    :class "form-control"
+                    :value (str (get-in cursor [:entry :url]))
+                    :on-change (fn [event]
+                                 (om/update! cursor [:entry :url] (.-value (.-target event))))}]
+           ;; TODO: textarea for image description
+           [:label "Image Description"]
+           [:textarea {:type "text"
+                       :class "form-control"
+                       :value (str (get-in cursor [:entry :description]))
+                       :on-change (fn [event]
+                                    (om/update! cursor [:entry :description] (.-value (.-target event))))}] ; let user add a comment on the image
+           ;; TODO: button that :on-click takes the current :entry and adds it to the list of images
+           [:input {:type "submit" ; let user submit her choices
+                    :value "Add Image"
+                    :class "btn btn-primary"
+                    :on-click (fn [event]
+                                (cond
+                                  (some #(= (:url %) (get-in cursor [:entry :url])) (get-in cursor [:images])) (println "image already in list" (get-in cursor [:entry :url])) ; TODO handle error
+                                  (try (js/URL. (get-in cursor [:entry :url])) false (catch js/Error e true)) (println "invalid URL" (get-in cursor [:entry :url])) ; disallow empty/invalid URL                                  
+                                  true (om/transact! cursor [:images] #(conj % (get-in cursor [:entry]))))
+                                (println (get-in cursor [:images])))}]
+           ]]]
+        [:div {:id "image-list" :class "card mt-2"}
+         [:div {:class "card-body"}
+          [:h4 "The list of images"]
+          ;; TODO: do something cool with (:images cursor) here to show them all
+          [:div {:class "card-deck"} ; show image and comment after submission in image list
+           (for [img (get-in cursor [:images])]
+             [:div {:class "card"}
+              [:img {:class "card-img-top" :src (:url img)}]
+              [:div {:class "card-body"}
+               [:p {:class "card-text"} (:description img)]]
+              [:input {:type "submit" ; show a button for each image using Om cursors
+                    :value "Delete Image"
+                    :class "btn btn-primary"
+                    :on-click (fn [event]
+                                (om/transact! cursor [:images] #(vec (filter (fn [e] (not (= (:url img) (:url e)))) %)))
+                                (println (get-in cursor [:images])))}]])]
+          ]]]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC
+
+Now I will redo everything to have modular and well tested code.
+
+** DONE let user enter an URL of an image
+CLOSED: [2018-02-03 Sat 23:21]
+:PROPERTIES:
+:CREATED:  [2018-02-01 Thu 23:33]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-03 Sat 23:21]
+:END:
+
+We want to update the state on change. We define a test for this:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/test/cljs/applicant_test/core_test.cljs
+(ns applicant-test.core-test
+  (:require-macros [cljs.test :refer (is deftest testing)])
+  (:require [cljs.test]
+            [applicant-test.core :as c]))
+
+(deftest add-image-url-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-image-url-input (fn [target] "test") (fn [event target] (swap! state inc))))]        
+    ((:on-change (:input dom)) "someEvent")
+    (is (= @state 1))))  
+
+#+END_SRC
+
+Then we define and use the high order function:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+(defn update! [cursor event target]
+  (om/update! cursor target (.-value (.-target event))))
+
+(defn add-image-url-input [get-fn update-fn]
+  (let [target [:entry :url]]
+  [:label "Image URL"]
+  [:input {:type "text"
+           :class "form-control"
+           :value (str (get-fn target))
+           :on-change (fn [event]
+                        (update-fn event target))}]))
+
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           ; I made add-image-url-input a higher order function to
+           ; make it testable (here I assume the om library to be well
+           ; tested)
+           (add-image-url-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: textarea for image description
+           [:label "Image Description"]
+           [:textarea {:type "text"
+                       :class "form-control"
+                       :value (str (get-in cursor [:entry :description]))
+                       :on-change (fn [event]
+                                    (update! cursor event [:entry :description]))}] ; let user add a comment on the image
+           ;; TODO: button that :on-click takes the current :entry and adds it to the list of images
+           [:input {:type "submit" ; let user submit her choices
+                    :value "Add Image"
+                    :class "btn btn-primary"
+                    :on-click (fn [event]
+                                (cond
+                                  (some #(= (:url %) (get-in cursor [:entry :url])) (get-in cursor [:images])) (println "image already in list" (get-in cursor [:entry :url])) ;   TODO handle error
+                                  (try (js/URL. (get-in cursor [:entry :url])) false (catch js/Error e true)) (println "invalid URL" (get-in cursor [:entry :url])) ; disallow empty/invalid URL TODO handle error
+                                  true (om/transact! cursor [:images] #(conj % (get-in cursor [:entry]))))
+                                (println (get-in cursor [:images])))}]
+           ]]]
+        [:div {:id "image-list" :class "card mt-2"}
+         [:div {:class "card-body"}
+          [:h4 "The list of images"]
+          ;; TODO: do something cool with (:images cursor) here to show them all
+          [:div {:class "card-deck"} ; show image and comment after submission in image list
+           (for [img (get-in cursor [:images])]
+             [:div {:class "card"}
+              [:img {:class "card-img-top" :src (:url img)}]
+              [:div {:class "card-body"}
+               [:p {:class "card-text"} (:description img)]]
+              [:input {:type "submit" ; show a button for each image using Om cursors
+                    :value "Delete Image"
+                    :class "btn btn-primary"
+                    :on-click (fn [event]
+                                (om/transact! cursor [:images] #(vec (filter (fn [e] (not (= (:url img) (:url e)))) %)))
+                                (println (get-in cursor [:images])))}]])]
+          ]]]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC
+
+You can run the tests with:
+
+#+BEGIN_SRC sh
+lein doo slimer test
+#+END_SRC
+
+** DONE let user add a comment on the image
+CLOSED: [2018-02-03 Sat 23:49]
+:PROPERTIES:
+:CREATED:  [2018-02-01 Thu 23:34]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-03 Sat 23:49]
+:END:
+
+#+BEGIN_QUOTE
+Add a field for the description of the new image.
+#+END_QUOTE
+
+Let's add another test:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/test/cljs/applicant_test/core_test.cljs
+(ns applicant-test.core-test
+  (:require-macros [cljs.test :refer (is deftest testing)])
+  (:require [cljs.test]
+            [applicant-test.core :as c]))
+
+(deftest add-image-url-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-image-url-input (fn [target] "test") (fn [event target] (swap! state inc))))]        
+    ((:on-change (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-description-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-image-description-input (fn [target] "test") (fn [event target] (swap! state inc))))]        
+    ((:on-change (:textarea dom)) "someEvent")
+    (is (= @state 1))))
+
+#+END_SRC
+
+And add a the comment textarea:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+(defn update! [cursor event target]
+  (om/update! cursor target (.-value (.-target event))))
+
+; I could refactor more, but for now it seems enough
+(defn add-insertion-dom [type label value update-fn]
+  [:label label]
+  [type {:type "text"
+           :class "form-control"
+           :value (str value)
+           :on-change (fn [event]
+                        (update-fn event))}])
+
+(defn add-image-url-input [get-fn update-fn]
+  (let [target [:entry :url]]
+    (add-insertion-dom :input "Image URL" (get-fn target)  #(update-fn % target))))
+
+(defn add-image-description-input [get-fn update-fn]
+  (let [target [:entry :description]]
+    (add-insertion-dom :textarea "Image Description" (get-fn target) #(update-fn % target))))
+
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           ; I made add-image-url-input a higher order function to
+           ; make it testable (here I assume the om library to be well
+           ; tested)
+           (add-image-url-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: textarea for image description
+           (add-image-description-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: button that :on-click takes the current :entry and adds it to the list of images
+           [:input {:type "submit" ; let user submit her choices
+                    :value "Add Image"
+                    :class "btn btn-primary"
+                    :on-click (fn [event]
+                                (cond
+                                  (some #(= (:url %) (get-in cursor [:entry :url])) (get-in cursor [:images])) (println "image already in list" (get-in cursor [:entry :url])) ;   TODO handle error
+                                  (try (js/URL. (get-in cursor [:entry :url])) false (catch js/Error e true)) (println "invalid URL" (get-in cursor [:entry :url])) ; disallow empty/invalid URL TODO handle error
+                                  true (om/transact! cursor [:images] #(conj % (get-in cursor [:entry]))))
+                                (println (get-in cursor [:images])))}]
+           ]]]
+        [:div {:id "image-list" :class "card mt-2"}
+         [:div {:class "card-body"}
+          [:h4 "The list of images"]
+          ;; TODO: do something cool with (:images cursor) here to show them all
+          [:div {:class "card-deck"} ; show image and comment after submission in image list
+           (for [img (get-in cursor [:images])]
+             [:div {:class "card"}
+              [:img {:class "card-img-top" :src (:url img)}]
+              [:div {:class "card-body"}
+               [:p {:class "card-text"} (:description img)]]
+              [:input {:type "submit" ; show a button for each image using Om cursors
+                    :value "Delete Image"
+                    :class "btn btn-primary"
+                    :on-click (fn [event]
+                                (om/transact! cursor [:images] #(vec (filter (fn [e] (not (= (:url img) (:url e)))) %)))
+                                (println (get-in cursor [:images])))}]])]
+          ]]]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC
+
+** DONE let user submit her choices 
+CLOSED: [2018-02-04 Sun 00:19]
+:PROPERTIES:
+:CREATED:  [2018-02-01 Thu 23:36]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-04 Sun 00:19]
+:END:
+
+#+BEGIN_QUOTE
+Add a button to add the image to the `:images` vector in the application state.
+#+END_QUOTE
+
+Let's test that submitting can change state:
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/test/cljs/applicant_test/core_test.cljs
+(ns applicant-test.core-test
+  (:require-macros [cljs.test :refer (is deftest testing)])
+  (:require [cljs.test]
+            [applicant-test.core :as c]))
+
+(deftest add-image-url-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-image-url-input (fn [target] "test") (fn [event target] (swap! state inc))))]        
+    ((:on-change (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-description-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-image-description-input (fn [target] "test") (fn [event target] (swap! state inc))))]        
+    ((:on-change (:textarea dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-submit-button-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-submit-button (fn [] (swap! state inc))))]
+    ((:on-click (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+#+END_SRC
+
+And let's refactor the button:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+(defn update! [cursor event target]
+  (om/update! cursor target (.-value (.-target event))))
+
+; I could refactor more, but for now it seems enough
+(defn add-insertion-dom [type label value update-fn]
+  [:label label]
+  [type {:type "text"
+           :class "form-control"
+           :value (str value)
+           :on-change (fn [event]
+                        (update-fn event))}])
+
+(defn add-image-url-input [get-fn update-fn]
+  (let [target [:entry :url]]
+    (add-insertion-dom :input "Image URL" (get-fn target)  #(update-fn % target))))
+
+(defn add-image-description-input [get-fn update-fn]
+  (let [target [:entry :description]]
+    (add-insertion-dom :textarea "Image Description" (get-fn target) #(update-fn % target))))
+
+
+(defn cond-fn [get-fn transact-fn]
+  (let [url (get-fn [:entry :url])
+        entry (get-fn [:entry])
+        image-already-in-list? (some #(= (:url %) url) (get-fn [:images]))
+        is-invalid-url? (try (js/URL. url) false (catch js/Error e true))]
+    (cond
+      image-already-in-list? (println "image already in list" url) ;   TODO handle error
+      is-invalid-url? (println "invalid URL" url) ; disallow empty/invalid URL TODO handle error
+      true (transact-fn [:images] #(conj % entry)))))
+
+(defn add-submit-button [cond-fn]
+  [:input {:type "submit"
+           :value "Add Image"
+           :class "btn btn-primary"
+           :on-click (fn [_] (cond-fn))}])
+
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           ; I made add-image-url-input a higher order function to
+           ; make it testable (here I assume the om library to be well
+           ; tested)
+           (add-image-url-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: textarea for image description
+           (add-image-description-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: button that :on-click takes the current :entry and adds it to the list of images
+           (add-submit-button (fn [] (cond-fn (partial get-in cursor) (partial om/transact! cursor))))
+           ]]]
+        [:div {:id "image-list" :class "card mt-2"}
+         [:div {:class "card-body"}
+          [:h4 "The list of images"]
+          ;; TODO: do something cool with (:images cursor) here to show them all
+          [:div {:class "card-deck"} ; show image and comment after submission in image list
+           (for [img (get-in cursor [:images])]
+             [:div {:class "card"}
+              [:img {:class "card-img-top" :src (:url img)}]
+              [:div {:class "card-body"}
+               [:p {:class "card-text"} (:description img)]]
+              [:input {:type "submit" ; show a button for each image using Om cursors
+                    :value "Delete Image"
+                    :class "btn btn-primary"
+                    :on-click (fn [event]
+                                (om/transact! cursor [:images] #(vec (filter (fn [e] (not (= (:url img) (:url e)))) %)))
+                                (println (get-in cursor [:images])))}]])]
+          ]]]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC
+
+** DONE show image and comment after submission in image list
+CLOSED: [2018-02-04 Sun 12:38]
+:PROPERTIES:
+:CREATED:  [2018-02-01 Thu 23:37]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-04 Sun 12:38]
+:END:
+
+#+BEGIN_QUOTE
+Show the images in the list in a nice way (small, with their description).
+#+END_QUOTE
+
+#+BEGIN_QUOTE
+For showing the list of images, consider Bootstrap's "Cards".
+#+END_QUOTE
+
+Maybe I can use a Bootstrap carousel instead of a list of cards?
+https://codepen.io/andrearufo/pen/rVWpyE
+No, it does not match the requirements.
+
+Let's add some tests:
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/test/cljs/applicant_test/core_test.cljs
+(ns applicant-test.core-test
+  (:require-macros [cljs.test :refer (is deftest testing)])
+  (:require [cljs.test]
+            [applicant-test.core :as c]))
+
+;; NOTE: proper testing would need an external library like https://github.com/bensu/cljs-react-test
+;; for lack of time I am testing with what I have
+
+(deftest add-image-url-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-image-url-input (fn [target] "test") (fn [event target] (swap! state inc))))]        
+    ((:on-change (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-description-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-image-description-input (fn [target] "test") (fn [event target] (swap! state inc))))]        
+    ((:on-change (:textarea dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-submit-button-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-submit-button (fn [] (swap! state inc))))]
+    ((:on-click (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-list-test
+  (let [transact-fn (fn [_ _] nil)
+        get-fn (fn [_] [{:url "someUrl", :description "someDescription"} {:url "someOtherUrl", :description "someOtherDescription"}])
+        ; the following binding would need refactoring
+        dom-strings (filter string?
+                            (flatten
+                              (map #(if (map? %) (vals %) %)
+                                   (flatten (c/add-image-list get-fn transact-fn)))))
+        ]
+    (is (some #(= "someUrl" %) dom-strings))
+    (is (some #(= "someDescription" %) dom-strings))
+    (is (some #(= "someOtherUrl" %) dom-strings))
+    (is (some #(= "someOtherDescription" %) dom-strings))))
+
+#+END_SRC
+
+Let's add a refactored version of the image list feature:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+(defn update! [cursor event target]
+  (om/update! cursor target (.-value (.-target event))))
+
+; I could refactor more, but for now it seems enough
+(defn add-insertion-dom [type label value update-fn]
+  [:label label]
+  [type {:type "text"
+           :class "form-control"
+           :value (str value)
+           :on-change (fn [event]
+                        (update-fn event))}])
+
+(defn add-image-url-input [get-fn update-fn]
+  (let [target [:entry :url]]
+    (add-insertion-dom :input "Image URL" (get-fn target)  #(update-fn % target))))
+
+(defn add-image-description-input [get-fn update-fn]
+  (let [target [:entry :description]]
+    (add-insertion-dom :textarea "Image Description" (get-fn target) #(update-fn % target))))
+
+
+(defn cond-fn [get-fn transact-fn]
+  (let [url (get-fn [:entry :url])
+        entry (get-fn [:entry])
+        image-already-in-list? (some #(= (:url %) url) (get-fn [:images]))
+        is-invalid-url? (try (js/URL. url) false (catch js/Error e true))]
+    (cond
+      image-already-in-list? (println "image already in list" url) ;   TODO handle error
+      is-invalid-url? (println "invalid URL" url) ; disallow empty/invalid URL TODO handle error
+      true (transact-fn [:images] #(conj % entry)))))
+
+(defn add-submit-button [cond-fn]
+  [:input {:type "submit"
+           :value "Add Image"
+           :class "btn btn-primary"
+           :on-click (fn [_] (cond-fn))}])
+
+(defn add-image [img transact-fn]
+  [:div {:class "card"}
+   [:img {:class "card-img-top" :src (:url img)}]
+   [:div {:class "card-body"}
+    [:p {:class "card-text"} (:description img)]]
+   [:input {:type "submit" ; show a button for each image using Om cursors
+            :value "Delete Image"
+            :class "btn btn-primary"
+            :on-click (fn [event]
+                        (transact-fn [:images] #(vec (filter (fn [e] (not (= (:url img) (:url e)))) %))))}]])
+
+(defn add-image-list [get-fn transact-fn]
+  [:div {:id "image-list" :class "card mt-2"}
+   [:div {:class "card-body"}
+    [:h4 "The list of images"]
+    ;; TODO: do something cool with (:images cursor) here to show them all
+    [:div {:class "card-deck"} ; show image and comment after submission in image list
+     (for [img (get-fn [:images])]
+       (add-image img transact-fn))]
+    ]])
+
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           ; I made add-image-url-input a higher order function to
+           ; make it testable (here I assume the om library to be well
+           ; tested)
+           (add-image-url-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: textarea for image description
+           (add-image-description-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: button that :on-click takes the current :entry and adds it to the list of images
+           (add-submit-button (fn [] (cond-fn (partial get-in cursor) (partial om/transact! cursor))))]]]
+        (add-image-list (partial get-in cursor) (partial om/transact! cursor))
+        ]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC
+
+** DONE disallow duplicate URLs
+CLOSED: [2018-02-04 Sun 15:51]
+:PROPERTIES:
+:CREATED:  [2018-02-01 Thu 23:37]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-04 Sun 15:51]
+:END:
+
+Tests:
+
+#+BEGIN_SRC clojure :tangle /home/andrea/workspace/exercise/test/cljs/applicant_test/core_test.cljs
+(ns applicant-test.core-test
+  (:require-macros [cljs.test :refer (is deftest testing)])
+  (:require [cljs.test]
+            [applicant-test.core :as c]))
+
+;; NOTE: proper testing would need an external library like https://github.com/bensu/cljs-react-test
+;; for lack of time I am testing with what I have
+
+(deftest add-image-url-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (flatten (c/add-image-url-input (fn [target] "test") (fn [event target] (swap! state inc)))))]        
+    ((:on-change (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-description-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (flatten (c/add-image-description-input (fn [target] "test") (fn [event target] (swap! state inc)))))]        
+    ((:on-change (:textarea dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-submit-button-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-submit-button (fn [] (swap! state inc))))]
+    ((:on-click (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-list-test
+  (let [transact-fn (fn [_ _] nil)
+        get-fn (fn [_] [{:url "someUrl", :description "someDescription"} {:url "someOtherUrl", :description "someOtherDescription"}])
+        ; the following binding would need refactoring
+        dom-strings (filter string?
+                            (flatten
+                              (map #(if (map? %) (vals %) %)
+                                   (flatten (c/add-image-list get-fn transact-fn)))))
+        ]
+    (is (some #(= "someUrl" %) dom-strings))
+    (is (some #(= "someDescription" %) dom-strings))
+    (is (some #(= "someOtherUrl" %) dom-strings))
+    (is (some #(= "someOtherDescription" %) dom-strings))))
+
+(deftest image-already-in-list?-test
+  (let [get-fn (fn [_] [{:url "someUrl"}])]
+    (is (= (c/image-already-in-list? "someUrl" get-fn)))
+    (is (not (c/image-already-in-list? "notExistingUrl" get-fn)))))
+
+#+END_SRC
+
+And refactored code:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+(defn update! [cursor event target]
+  (om/update! cursor target (.-value (.-target event))))
+
+; I could refactor more, but for now it seems enough
+(defn add-insertion-dom [type label value update-fn]
+  [[:label label]
+  [type {:type "text"
+           :class "form-control"
+           :value (str value)
+           :on-change (fn [event]
+                        (update-fn event))}]])
+
+(defn add-image-url-input [get-fn update-fn]
+  (let [target [:entry :url]]
+    (add-insertion-dom :input "Image URL" (get-fn target)  #(update-fn % target))))
+
+(defn add-image-description-input [get-fn update-fn]
+  (let [target [:entry :description]]
+    (add-insertion-dom :textarea "Image Description" (get-fn target) #(update-fn % target))))
+
+(defn image-already-in-list? [url get-fn]
+  (some #(= (:url %) url) (get-fn [:images])))
+
+(defn cond-fn [get-fn transact-fn]
+  (let [url (get-fn [:entry :url])
+        entry (get-fn [:entry])
+        is-invalid-url? (try (js/URL. url) false (catch js/Error e true))]
+    (cond
+      image-already-in-list? (js/alert "This image is already in your list.") ; with more time I would have used the following https://stackoverflow.com/questions/14361517/mark-error-in-form-using-bootstrap
+      is-invalid-url? (js/alert "The image URL is invalid.")
+      true (transact-fn [:images] #(conj % entry)))))
+
+(defn add-submit-button [cond-fn]
+  [:input {:type "submit"
+           :value "Add Image"
+           :class "btn btn-primary"
+           :on-click (fn [_] (cond-fn))}])
+
+(defn add-image [img transact-fn]
+  [:div {:class "card"}
+   [:img {:class "card-img-top" :src (:url img)}]
+   [:div {:class "card-body"}
+    [:p {:class "card-text"} (:description img)]]
+   [:input {:type "submit" ; show a button for each image using Om cursors
+            :value "Delete Image"
+            :class "btn btn-primary"
+            :on-click (fn [event]
+                        (transact-fn [:images] #(vec (filter (fn [e] (not (= (:url img) (:url e)))) %))))}]])
+
+(defn add-image-list [get-fn transact-fn]
+  [:div {:id "image-list" :class "card mt-2"}
+   [:div {:class "card-body"}
+    [:h4 "The list of images"]
+    ;; TODO: do something cool with (:images cursor) here to show them all
+    [:div {:class "card-deck"} ; show image and comment after submission in image list
+     (for [img (get-fn [:images])]
+       (add-image img transact-fn))]]])
+
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           ; I made add-image-url-input a higher order function to
+           ; make it testable (here I assume the om library to be well
+           ; tested)
+           (add-image-url-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: textarea for image description
+           (add-image-description-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: button that :on-click takes the current :entry and adds it to the list of images
+           (add-submit-button (fn [] (cond-fn (partial get-in cursor) (partial om/transact! cursor))))]]]
+        (add-image-list (partial get-in cursor) (partial om/transact! cursor))
+        ]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC
+
+** DONE disallow empty/invalid URL
+CLOSED: [2018-02-04 Sun 16:01]
+:PROPERTIES:
+:CREATED:  [2018-02-01 Thu 23:44]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-04 Sun 16:01]
+- Note taken on [2018-02-03 Sat 19:00] \\
+  https://github.com/hantuzun/awesome-clojurescript
+:END:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/test/cljs/applicant_test/core_test.cljs
+(ns applicant-test.core-test
+  (:require-macros [cljs.test :refer (is deftest testing)])
+  (:require [cljs.test]
+            [applicant-test.core :as c]))
+
+;; NOTE: proper testing would need an external library like https://github.com/bensu/cljs-react-test
+;; for lack of time I am testing with what I have
+
+(deftest add-image-url-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (flatten (c/add-image-url-input (fn [target] "test") (fn [event target] (swap! state inc)))))]        
+    ((:on-change (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-description-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (flatten (c/add-image-description-input (fn [target] "test") (fn [event target] (swap! state inc)))))]        
+    ((:on-change (:textarea dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-submit-button-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-submit-button (fn [] (swap! state inc))))]
+    ((:on-click (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-list-test
+  (let [transact-fn (fn [_ _] nil)
+        get-fn (fn [_] [{:url "someUrl", :description "someDescription"} {:url "someOtherUrl", :description "someOtherDescription"}])
+        ; the following binding would need refactoring
+        dom-strings (filter string?
+                            (flatten
+                              (map #(if (map? %) (vals %) %)
+                                   (flatten (c/add-image-list get-fn transact-fn)))))
+        ]
+    (is (some #(= "someUrl" %) dom-strings))
+    (is (some #(= "someDescription" %) dom-strings))
+    (is (some #(= "someOtherUrl" %) dom-strings))
+    (is (some #(= "someOtherDescription" %) dom-strings))))
+
+(deftest image-already-in-list?-test
+  (let [get-fn (fn [_] [{:url "someUrl"}])]
+    (is (c/image-already-in-list? "someUrl" get-fn))
+    (is (not (c/image-already-in-list? "notExistingUrl" get-fn)))))
+
+(deftest image-already-in-list?-test
+  (is (c/is-invalid-url? ""))
+  (is (c/is-invalid-url? "someUrl"))
+  (is (not (c/is-invalid-url? "https://duckduckgo.com/"))))
+
+#+END_SRC
+
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+(defn update! [cursor event target]
+  (om/update! cursor target (.-value (.-target event))))
+
+; I could refactor more, but for now it seems enough
+(defn add-insertion-dom [type label value update-fn]
+  [[:label label]
+  [type {:type "text"
+           :class "form-control"
+           :value (str value)
+           :on-change (fn [event]
+                        (update-fn event))}]])
+
+(defn add-image-url-input [get-fn update-fn]
+  (let [target [:entry :url]]
+    (add-insertion-dom :input "Image URL" (get-fn target)  #(update-fn % target))))
+
+(defn add-image-description-input [get-fn update-fn]
+  (let [target [:entry :description]]
+    (add-insertion-dom :textarea "Image Description" (get-fn target) #(update-fn % target))))
+
+(defn image-already-in-list? [url get-fn]
+  (some #(= (:url %) url) (get-fn [:images])))
+
+(defn is-invalid-url? [url]
+  (try (js/URL. url) false (catch js/Error e true)))
+
+(defn cond-fn [get-fn transact-fn]
+  (let [url (get-fn [:entry :url])
+        entry (get-fn [:entry])]
+    (cond
+      (image-already-in-list? url get-fn) (js/alert "This image is already in your list.") ; with more time I would have used the following https://stackoverflow.com/questions/14361517/mark-error-in-form-using-bootstrap
+      (is-invalid-url? url) (js/alert "The image URL is invalid.")
+      true (transact-fn [:images] #(conj % entry)))))
+
+(defn add-submit-button [cond-fn]
+  [:input {:type "submit"
+           :value "Add Image"
+           :class "btn btn-primary"
+           :on-click (fn [_] (cond-fn))}])
+
+(defn add-image [img transact-fn]
+  [:div {:class "card"}
+   [:img {:class "card-img-top" :src (:url img)}]
+   [:div {:class "card-body"}
+    [:p {:class "card-text"} (:description img)]]
+   [:input {:type "submit" ; show a button for each image using Om cursors
+            :value "Delete Image"
+            :class "btn btn-primary"
+            :on-click (fn [event]
+                        (transact-fn [:images] #(vec (filter (fn [e] (not (= (:url img) (:url e)))) %))))}]])
+
+(defn add-image-list [get-fn transact-fn]
+  [:div {:id "image-list" :class "card mt-2"}
+   [:div {:class "card-body"}
+    [:h4 "The list of images"]
+    ;; TODO: do something cool with (:images cursor) here to show them all
+    [:div {:class "card-deck"} ; show image and comment after submission in image list
+     (for [img (get-fn [:images])]
+       (add-image img transact-fn))]]])
+
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           ; I made add-image-url-input a higher order function to
+           ; make it testable (here I assume the om library to be well
+           ; tested)
+           (add-image-url-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: textarea for image description
+           (add-image-description-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: button that :on-click takes the current :entry and adds it to the list of images
+           (add-submit-button (fn [] (cond-fn (partial get-in cursor) (partial om/transact! cursor))))]]]
+        (add-image-list (partial get-in cursor) (partial om/transact! cursor))
+        ]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC
+** DONE show a button for each image using Om cursors 
+CLOSED: [2018-02-04 Sun 16:19]
+:PROPERTIES:
+:CREATED:  [2018-02-01 Thu 23:45]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-04 Sun 16:19]
+:END:
+
+#+BEGIN_QUOTE
+Show a button for each image in the list that lets you delete that
+  image from the list. Try to only use cursors for this, instead of
+  interacting with the state atom directly.
+#+END_QUOTE
+
+Some tests:
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/test/cljs/applicant_test/core_test.cljs
+(ns applicant-test.core-test
+  (:require-macros [cljs.test :refer (is deftest testing)])
+  (:require [cljs.test]
+            [applicant-test.core :as c]))
+
+;; NOTE: proper testing would need an external library like https://github.com/bensu/cljs-react-test
+;; for lack of time I am testing with what I have
+
+(deftest add-image-url-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (flatten (c/add-image-url-input (fn [target] "test") (fn [event target] (swap! state inc)))))]        
+    ((:on-change (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-description-input-test
+  (let [state (atom 0)
+        dom (apply hash-map (flatten (c/add-image-description-input (fn [target] "test") (fn [event target] (swap! state inc)))))]        
+    ((:on-change (:textarea dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-submit-button-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-submit-button (fn [] (swap! state inc))))]
+    ((:on-click (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+(deftest add-image-list-test
+  (let [transact-fn (fn [_ _] nil)
+        get-fn (fn [_] [{:url "someUrl", :description "someDescription"} {:url "someOtherUrl", :description "someOtherDescription"}])
+        ; the following binding would need refactoring
+        dom-strings (filter string?
+                            (flatten
+                              (map #(if (map? %) (vals %) %)
+                                   (flatten (c/add-image-list get-fn transact-fn)))))
+        ]
+    (is (some #(= "someUrl" %) dom-strings))
+    (is (some #(= "someDescription" %) dom-strings))
+    (is (some #(= "someOtherUrl" %) dom-strings))
+    (is (some #(= "someOtherDescription" %) dom-strings))))
+
+(deftest image-already-in-list?-test
+  (let [get-fn (fn [_] [{:url "someUrl"}])]
+    (is (c/image-already-in-list? "someUrl" get-fn))
+    (is (not (c/image-already-in-list? "notExistingUrl" get-fn)))))
+
+(deftest image-already-in-list?-test
+  (is (c/is-invalid-url? ""))
+  (is (c/is-invalid-url? "someUrl"))
+  (is (not (c/is-invalid-url? "https://duckduckgo.com/"))))
+
+(deftest delete-image-test
+  (let [url {:url "someUrl"}
+        other-url {:url "someOtherUrl"}]
+  (is (= (c/delete-image url []) []))
+  (is (= (c/delete-image url [url url other-url]) [other-url]))))
+
+(deftest add-delete-button-test
+  (let [state (atom 0)
+        dom (apply hash-map (c/add-delete-button "someUrl" (fn [_ _] (swap! state inc))))]
+    ((:on-click (:input dom)) "someEvent")
+    (is (= @state 1))))
+
+#+END_SRC
+
+And some refactored code:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+(defn update! [cursor event target]
+  (om/update! cursor target (.-value (.-target event))))
+
+; I could refactor more, but for now it seems enough
+(defn add-insertion-dom [type label value update-fn]
+  [[:label label]
+  [type {:type "text"
+           :class "form-control"
+           :value (str value)
+           :on-change (fn [event]
+                        (update-fn event))}]])
+
+(defn add-image-url-input [get-fn update-fn]
+  (let [target [:entry :url]]
+    (add-insertion-dom :input "Image URL" (get-fn target)  #(update-fn % target))))
+
+(defn add-image-description-input [get-fn update-fn]
+  (let [target [:entry :description]]
+    (add-insertion-dom :textarea "Image Description" (get-fn target) #(update-fn % target))))
+
+(defn image-already-in-list? [url get-fn]
+  (some #(= (:url %) url) (get-fn [:images])))
+
+(defn is-invalid-url? [url]
+  (try (js/URL. url) false (catch js/Error e true)))
+
+(defn cond-fn [get-fn transact-fn]
+  (let [url (get-fn [:entry :url])
+        entry (get-fn [:entry])]
+    (cond
+      (image-already-in-list? url get-fn) (js/alert "This image is already in your list.") ; with more time I would have used the following https://stackoverflow.com/questions/14361517/mark-error-in-form-using-bootstrap
+      (is-invalid-url? url) (js/alert "The image URL is invalid.")
+      true (transact-fn [:images] #(conj % entry)))))
+
+(defn add-submit-button [cond-fn]
+  [:input {:type "submit"
+           :value "Add Image"
+           :class "btn btn-primary"
+           :on-click (fn [_] (cond-fn))}])
+
+(defn delete-image [img images]
+  (vec (filter (fn [e] (not (= (:url img) (:url e)))) images)))
+
+(defn add-delete-button [img transact-fn]
+  [:input {:type "submit" ; show a button for each image using Om cursors
+            :value "Delete Image"
+            :class "btn btn-primary"
+            :on-click (fn [_]
+                        (transact-fn [:images] #(delete-image img %)))}])
+
+(defn add-image [img transact-fn]
+  [:div {:class "card"}
+   [:img {:class "card-img-top" :src (:url img)}]
+   [:div {:class "card-body"}
+    [:p {:class "card-text"} (:description img)]]
+   (add-delete-button img transact-fn)])
+
+(defn add-image-list [get-fn transact-fn]
+  [:div {:id "image-list" :class "card mt-2"}
+   [:div {:class "card-body"}
+    [:h4 "The list of images"]
+    ;; TODO: do something cool with (:images cursor) here to show them all
+    [:div {:class "card-deck"} ; show image and comment after submission in image list
+     (for [img (get-fn [:images])]
+       (add-image img transact-fn))]]])
+
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           ; I made add-image-url-input a higher order function to
+           ; make it testable (here I assume the om library to be well
+           ; tested)
+           (add-image-url-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: textarea for image description
+           (add-image-description-input (partial get-in cursor) (partial update! cursor))
+           ;; TODO: button that :on-click takes the current :entry and adds it to the list of images
+           (add-submit-button (fn [] (cond-fn (partial get-in cursor) (partial om/transact! cursor))))]]]
+        (add-image-list (partial get-in cursor) (partial om/transact! cursor))
+        ]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC
+
+** DONE handle errors changing forms color
+CLOSED: [2018-02-04 Sun 16:07]
+:PROPERTIES:
+:CREATED:  [2018-02-03 Sat 19:05]
+:END:
+:LOGBOOK:
+- CLOSING NOTE [2018-02-04 Sun 16:07]
+:END:
+
+https://github.com/omcljs/om-cookbook/tree/master/recipes/input-validation
+
+I did not have time to investigate this: I used js alerts.
+
+** final file 
+:PROPERTIES:
+:CREATED:  [2018-02-04 Sun 16:26]
+:END:
+
+#+BEGIN_SRC clojurescript :tangle /home/andrea/workspace/exercise/src/cljs/applicant_test/core.cljs
+(ns applicant-test.core
+  (:require [om.core :as om :include-macros true]
+            [om.dom :as dom :include-macros true]
+            [sablono.core :as html :refer-macros [html]]))
+
+(enable-console-print!)
+
+(defonce app-state (atom {:entry {:url nil
+                                  :description nil}
+                          :images []}))
+
+;; NOTE: I left all the definitions in this file to make evaluation
+;; easier (no navigation from file to file)
+;; Otherwise I would have moved some of the functions in a utils.cljs
+;; file and the soblono functions in a soblono-utils.cljs
+
+(defn update! [cursor event target]
+  (om/update! cursor target (.-value (.-target event))))
+
+; I could refactor more, but for now it seems enough
+(defn add-insertion-dom [type label value update-fn]
+  [[:label label]
+  [type {:type "text"
+           :class "form-control"
+           :value (str value)
+           :on-change (fn [event]
+                        (update-fn event))}]])
+
+(defn add-image-url-input [get-fn update-fn]
+  (let [target [:entry :url]]
+    (add-insertion-dom :input "Image URL" (get-fn target)  #(update-fn % target))))
+
+(defn add-image-description-input [get-fn update-fn]
+  (let [target [:entry :description]]
+    (add-insertion-dom :textarea "Image Description" (get-fn target) #(update-fn % target))))
+
+(defn image-already-in-list? [url get-fn]
+  (some #(= (:url %) url) (get-fn [:images])))
+
+(defn is-invalid-url? [url]
+  (try (js/URL. url) false (catch js/Error e true)))
+
+(defn cond-fn [get-fn transact-fn]
+  (let [url (get-fn [:entry :url])
+        entry (get-fn [:entry])]
+    (cond
+      (image-already-in-list? url get-fn) (js/alert "This image is already in your list.") ; with more time I would have used the following https://stackoverflow.com/questions/14361517/mark-error-in-form-using-bootstrap
+      (is-invalid-url? url) (js/alert "The image URL is invalid.")
+      true (transact-fn [:images] #(conj % entry)))))
+
+
+; NOTE: I could have refactored the submit and delete button similarly
+; to the input forms.
+(defn add-submit-button [cond-fn]
+  [:input {:type "submit"
+           :value "Add Image"
+           :class "btn btn-primary"
+           :on-click (fn [_] (cond-fn))}])
+
+(defn delete-image [img images]
+  (vec (filter (fn [e] (not (= (:url img) (:url e)))) images)))
+
+(defn add-delete-button [img transact-fn]
+  [:input {:type "submit" ; show a button for each image using Om cursors
+            :value "Delete Image"
+            :class "btn btn-primary"
+            :on-click (fn [_]
+                        (transact-fn [:images] #(delete-image img %)))}])
+
+(defn add-image [img transact-fn]
+  [:div {:class "card"}
+   [:img {:class "card-img-top" :src (:url img)}]
+   [:div {:class "card-body"}
+    [:p {:class "card-text"} (:description img)]]
+   (add-delete-button img transact-fn)])
+
+(defn add-image-list [get-fn transact-fn]
+  [:div {:id "image-list" :class "card mt-2"}
+   [:div {:class "card-body"}
+    [:h4 "The list of images"]
+    ;; TODO: do something cool with (:images cursor) here to show them all
+    [:div {:class "card-deck"} ; show image and comment after submission in image list
+     (for [img (get-fn [:images])]
+       (add-image img transact-fn))]]])
+
+;; NOTE: I could have taken out the soblono part in a function as I
+;; have done for the tasks, but I left the original parts of the
+;; assignment to highlight my work.
+(defn root-component [cursor owner]
+  (reify
+    om/IRender
+    (render [_]
+      (html
+       [:div
+        [:h1 "My Favourite Images"]
+        [:p {:class "lead"} "This is where I keep track of all my favourite images. I sure hope I never accidentally refresh this page!"]
+        [:div {:id "image-entry" :class "card"}
+         [:div {:class "card-body"}
+          [:h4 "New image"]
+          [:div {:class "form-group"}
+           ; I made add-image-url-input a higher order function to
+           ; make it testable (here I assume the om library to be well
+           ; tested)
+           (add-image-url-input (partial get-in cursor) (partial update! cursor))
+           ;; DONE: textarea for image description
+           (add-image-description-input (partial get-in cursor) (partial update! cursor))
+           ;; DONE: button that :on-click takes the current :entry and adds it to the list of images
+           (add-submit-button (fn [] (cond-fn (partial get-in cursor) (partial om/transact! cursor))))]]]
+        (add-image-list (partial get-in cursor) (partial om/transact! cursor))
+        ]))))
+
+(defn render []
+  (om/root
+   root-component
+   app-state
+   {:target (js/document.getElementById "app")}))
+
+#+END_SRC

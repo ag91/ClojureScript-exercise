@@ -1,0 +1,36 @@
+* Image List
+:PROPERTIES:
+:CREATED:  [2018-02-04 Sun 18:00]
+:END:
+
+A simple image list to try out the wonders of ClojureScript + Om +
+Soblono.
+
+If interested, check out the =AndreaSolution.org= file to see the
+requirements and how these were fulfilled. (I was rough as short on
+time, but it was a lot of fun!)
+
+
+** Run
+:PROPERTIES:
+:CREATED:  [2018-02-04 Sun 18:01]
+:END:
+
+You can run the application with:
+
+#+BEGIN_SRC sh
+lein figwheel
+#+END_SRC
+
+You can find the web application running at http:/localhost:3449.
+
+** Run tests
+:PROPERTIES:
+:CREATED:  [2018-02-04 Sun 18:03]
+:END:
+
+You can run the available tests with:
+
+#+BEGIN_SRC sh
+lein doo slimer test
+#+END_SRC
